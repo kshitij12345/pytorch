@@ -330,9 +330,8 @@
 - name: histc(Tensor self, int64_t bins, Scalar min, Scalar max)
   self: not_implemented("histc")
 
-- name: index_add_(Tensor self, int64_t dim, Tensor index, Tensor source)
-  self: grad
-  source: grad.index_select(dim, index)
+- name: index_add_(Tensor self, int64_t dim, Tensor index, Tensor source, Tensor weight)
+  self, source: index_add_backward(grad, dim , index, weight)
 
 - name: index_copy_(Tensor self, int64_t dim, Tensor index, Tensor source)
   self: grad.clone().index_fill_(dim, index, 0)

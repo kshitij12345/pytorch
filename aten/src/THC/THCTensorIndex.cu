@@ -123,7 +123,8 @@ __global__ void indexAddSmallIndex(TensorInfo<T, IndexType> dst,
                                    int dstAddDim,
                                    int srcAddDim,
                                    IndexType innerSize,
-                                   int64_t dstAddDimSize) {
+                                   int64_t dstAddDimSize,
+                                   TensorInfo<T, IndexType> weights) {
   // In order to avoid reloading the index that we are copying, load
   // it once to handle all of the points that are being selected, so
   // it can be reused as much as possible. This kernel is chosen when
@@ -148,7 +149,7 @@ __global__ void indexAddSmallIndex(TensorInfo<T, IndexType> dst,
         IndexToOffset<T, IndexType, SrcDim>::get(linearIndex, src);
       srcOffset += srcIndex * src.strides[srcAddDim];
 
-      atomicAdd(&dst.data[dstOffset], src.data[srcOffset]);
+      atomicAdd(&dst.data[dstOffset], THCNumerics<T>::mul(weights.data[srcIndex],src.data[srcOffset]));
     }
   }
 }
@@ -168,7 +169,8 @@ __global__ void indexAddLargeIndex(TensorInfo<T, IndexType> dst,
                                    int srcAddDim,
                                    IndexType totalSize,
                                    IndexType innerSize,
-                                   int64_t dstAddDimSize) {
+                                   int64_t dstAddDimSize,
+                                   TensorInfo<T, IndexType> weights) {
   // We stride over the output including the indexed dimension
   // (totalSize), and calculate the destination index point based on that
   for (IndexType linearIndex = blockIdx.x * blockDim.x + threadIdx.x;
@@ -197,7 +199,7 @@ __global__ void indexAddLargeIndex(TensorInfo<T, IndexType> dst,
       IndexToOffset<T, IndexType, SrcDim>::get(elementInSlice, src);
     srcOffset += srcIndex * src.strides[srcAddDim];
 
-    atomicAdd(&dst.data[dstOffset], src.data[srcOffset]);
+    atomicAdd(&dst.data[dstOffset], THCNumerics<T>::mul(weights.data[srcIndex],src.data[srcOffset]));
   }
 }
 

@@ -72,6 +72,22 @@ Tensor maybe_multiply(const Tensor & t, const Scalar & s) {
   }
 }
 
+std::tuple<Tensor, Tensor> index_add_backward(const Tensor & grad, int64_t dim, const Tensor & index, const Tensor & weight) {
+
+  // grad for source
+  Tensor grad_source = grad.index_select(dim, index);
+  std::vector<int64_t> sizes(grad_source.dim(),1);
+
+  bool weighted = weight.defined();
+  if(!weighted){
+    return std::tie(grad,grad_source);
+  } else{
+    sizes[dim] = weight.numel();
+    grad_source = grad_source * weight.view(sizes);
+    return std::tie(grad, grad_source);
+  }
+}
+
 int64_t _safe_size(IntList sizes, int64_t dim) {
   dim = at::maybe_wrap_dim(dim, sizes.size());
   return sizes.size() != 0 ? sizes[dim] : 1;

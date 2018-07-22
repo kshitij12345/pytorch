@@ -281,7 +281,7 @@ void THCTensor_(put)(THCState *state, THCTensor *dst, THCudaLongTensor *index, T
   }
 }
 
-void THCTensor_(indexAdd)(THCState *state, THCTensor *dst, int dim, THCudaLongTensor *indices, THCTensor *src)
+void THCTensor_(indexAdd)(THCState *state, THCTensor *dst, int dim, THCudaLongTensor *indices, THCTensor *src, THCTensor *weight)
 {
   THCAssertSameGPU(THCTensor_(checkGPU)(state, 2, dst, src));
   THCAssertSameGPU(THCudaLongTensor_checkGPU(state, 1, indices));
@@ -292,6 +292,15 @@ void THCTensor_(indexAdd)(THCState *state, THCTensor *dst, int dim, THCudaLongTe
   THArgCheck(dims <= MAX_CUTORCH_DIMS, 5, CUTORCH_DIM_WARNING);
   dims = THCudaLongTensor_nDimensionLegacyNoScalars(state, indices);
   THArgCheck(dims <= MAX_CUTORCH_DIMS, 4, CUTORCH_DIM_WARNING);
+
+  bool unweighted = ( weight == NULL );
+  if (unweighted){
+    weight = THCTensor_(new)(state);
+    THCTensor_(onesLike)(state, weight, indices);
+  } else{
+    dims = THCTensor_(_nDimension)(state, weight);
+    THArgCheck(dims == 1, 5, "Weight is supposed to be a vector");
+  }
 
   // The `src` is partitioned into two parts:
   // -the size of each slice we are indexing, which is the
@@ -315,7 +324,7 @@ void THCTensor_(indexAdd)(THCState *state, THCTensor *dst, int dim, THCudaLongTe
   indexAddSmallIndex<TENSOR_TYPE, TYPE, DST_DIM, SRC_DIM, IDX_DIM> \
     <<<smallIndexGrid, smallIndexBlock, 0, stream>>>(   \
       dstInfo, srcInfo, indicesInfo,                    \
-      dstAddDim, srcAddDim, sliceSize, dstAddDimSize);
+      dstAddDim, srcAddDim, sliceSize, dstAddDimSize, weightsInfo);
 
 #define LARGE_INDEX(TENSOR_TYPE, TYPE,                        \
                     DST_DIM, SRC_DIM, IDX_DIM, IDX_IS_MAJOR)  \
@@ -325,7 +334,7 @@ void THCTensor_(indexAdd)(THCState *state, THCTensor *dst, int dim, THCudaLongTe
       dstInfo, srcInfo, indicesInfo,                          \
       dstAddDim, srcAddDim, srcTotalSize,                     \
       (IDX_IS_MAJOR) ? sliceSize : numIndices,                \
-      dstAddDimSize);
+      dstAddDimSize, weightsInfo);
 
   dim3 smallIndexGrid(std::min(THCCeilDiv(sliceSize, (ptrdiff_t)128), (ptrdiff_t)(mpc * 8)));
   dim3 smallIndexBlock(std::min(sliceSize, (ptrdiff_t)128));
@@ -349,6 +358,10 @@ void THCTensor_(indexAdd)(THCState *state, THCTensor *dst, int dim, THCudaLongTe
     TensorInfo<int64_t, unsigned int> indicesInfo =
       getTensorInfo<int64_t, THCudaLongTensor, unsigned int>(state, indices);
     indicesInfo.collapseDims();
+
+    TensorInfo<real, unsigned int> weightsInfo =
+      getTensorInfo<real, THCTensor, unsigned int>(state, weight);
+    weightsInfo.collapseDims();
 
     // A reasonable choice for when to have each thread iterate over
     // indices to choose
@@ -398,8 +411,16 @@ void THCTensor_(indexAdd)(THCState *state, THCTensor *dst, int dim, THCudaLongTe
       getTensorInfo<int64_t, THCudaLongTensor, uint64_t>(state, indices);
     indicesInfo.collapseDims();
 
+    TensorInfo<real, uint64_t> weightsInfo =
+      getTensorInfo<real, THCTensor, uint64_t>(state, weight);
+    weightsInfo.collapseDims();
+
     LARGE_INDEX(real, uint64_t, -1, -1, -1, true);
   }
+
+if(unweighted){
+  THCTensor_(free)(state, weight);
+}
 
 #undef SMALL_INDEX
 #undef LARGE_INDEX

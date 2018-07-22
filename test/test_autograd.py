@@ -2342,6 +2342,39 @@ class TestAutograd(TestCase):
         test()
         self.assertEqual(dealloc[0], 1)
 
+    def test_inplace_index_add_weight(self):
+        def fn_check(inp_dim):
+            def fn(inp, src):
+                dim = inp_dim
+                y = inp.clone()
+                index = torch.tensor([0, 1, 2, 3, 4])
+                weight = torch.tensor([1, 3.0, 1, 2, 4], dtype=torch.float64)
+                return y.index_add_(dim, index, src, weight)
+            return fn
+
+        inp = torch.randn(5, 5, 5, 5, dtype=torch.float64, requires_grad=True)
+        src = torch.randn(5, 5, 5, 5, dtype=torch.float64, requires_grad=True)
+
+        # Check for dim 0
+        fn = fn_check(0)
+        gradcheck(fn, [inp, src], raise_exception=True)
+        gradgradcheck(fn, [inp, src], raise_exception=True)
+
+        # Check for dim 1
+        fn = fn_check(1)
+        gradcheck(fn, [inp, src], raise_exception=True)
+        gradgradcheck(fn, [inp, src], raise_exception=True)
+
+        # Check for dim 2
+        fn = fn_check(2)
+        gradcheck(fn, [inp, src], raise_exception=True)
+        gradgradcheck(fn, [inp, src], raise_exception=True)
+
+        # Check for dim 3
+        fn = fn_check(3)
+        gradcheck(fn, [inp, src], raise_exception=True)
+        gradgradcheck(fn, [inp, src], raise_exception=True)
+
     def test_mul_out(self):
         a = torch.randn(2, 2, requires_grad=True)
         b = torch.randn(2, 2, requires_grad=True)

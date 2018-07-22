@@ -338,7 +338,7 @@ void THTensor_(put)(THTensor *tensor, THLongTensor *index, THTensor *src, int ac
   THLongTensor_free(index);
 }
 
-void THTensor_(indexAdd)(THTensor *tensor, int dim, THLongTensor *index, THTensor *src)
+void THTensor_(indexAdd)(THTensor *tensor, int dim, THLongTensor *index, THTensor *src, THTensor *weight)
 {
   ptrdiff_t i, numel;
   THTensor *tSlice, *sSlice;
@@ -352,6 +352,16 @@ void THTensor_(indexAdd)(THTensor *tensor, int dim, THLongTensor *index, THTenso
   index = THLongTensor_newContiguous(index);
   index_data = THLongTensor_data(index);
 
+  bool weighted = (weight != NULL);
+  if (weighted){
+    THArgCheck(numel == THTensor_(nElement)(weight), 5, "Length of weight should be equal to length of index");
+#ifndef USE_TH_SIZE_ZERO_DIM
+    THArgCheck(weight->_dim() == 1, 5, "Weight is supposed to be a vector");
+#else
+    THArgCheck(weight->dim() == 1, 5,  "Weight is supposed to be a vector");   
+#endif
+  }
+
   if (tensor->dim() > 1)
   {
     tSlice = THTensor_(new)();
@@ -361,7 +371,7 @@ void THTensor_(indexAdd)(THTensor *tensor, int dim, THLongTensor *index, THTenso
     {
       THTensor_(select)(tSlice, tensor, dim, index_data[i] - TH_INDEX_BASE);
       THTensor_(select)(sSlice, src, dim, i);
-      THTensor_(cadd)(tSlice, tSlice, 1.0, sSlice);
+      THTensor_(cadd)(tSlice, tSlice, weighted?THTensor_(get1d)(weight,i):1.0, sSlice);
     }
 
     THTensor_(free)(tSlice);
@@ -373,7 +383,7 @@ void THTensor_(indexAdd)(THTensor *tensor, int dim, THLongTensor *index, THTenso
     {
       THTensor_(set1d)(tensor,
               index_data[i] - TH_INDEX_BASE,
-              THTensor_(get1d)(src,i) + THTensor_(get1d)(tensor,index_data[i] - TH_INDEX_BASE));
+              (weighted?THTensor_(get1d)(weight,i):1.0) * THTensor_(get1d)(src,i) + THTensor_(get1d)(tensor,index_data[i] - TH_INDEX_BASE));
     }
   }
   THLongTensor_free(index);

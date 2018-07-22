@@ -251,6 +251,8 @@
       wrap_dim: self
     - THIndexTensor* index
     - THTensor* source
+    - arg: THTensor* weight
+      default: NULL
 ]]
 [[
   name: indexFill_
