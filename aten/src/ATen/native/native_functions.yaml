@@ -601,9 +601,6 @@
 
 - func: embedding_dense_backward(Tensor grad, IndexTensor indices, int64_t num_weights, int64_t padding_idx, bool scale_grad_by_freq) -> Tensor
   variants: function
-  dispatch:
-    CPU: embedding_dense_backward_cpu
-    CUDA: embedding_dense_backward_cuda
 
 - func: embedding_renorm_(Tensor self, IndexTensor indices, double max_norm, double norm_type) -> Tensor
   variants: function
