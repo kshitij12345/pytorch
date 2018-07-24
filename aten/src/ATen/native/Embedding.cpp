@@ -31,18 +31,6 @@ Tensor embedding(const Tensor & weight, const Tensor & indices,
   return weight.index_select(0, indices.reshape(-1)).view(size);
 }
 
-Tensor embedding_backward(
-    const Tensor & grad, const Tensor & indices, int64_t num_weights,
-    int64_t padding_idx, bool scale_grad_by_freq, bool sparse) {
-  if (sparse) {
-    return at::embedding_sparse_backward(
-        grad, indices, num_weights, padding_idx, scale_grad_by_freq);
-  } else {
-    return at::embedding_dense_backward(
-        grad, indices, num_weights, padding_idx, scale_grad_by_freq);
-  }
-}
-
 Tensor embedding_sparse_backward(
     const Tensor & grad_, const Tensor & indices_, int64_t num_weights,
     int64_t padding_idx, bool scale_grad_by_freq) {
@@ -81,7 +69,7 @@ Tensor embedding_sparse_backward(
   return sparse_type._sparse_coo_tensor_unsafe(index, values, weight_size);
 }
 
-Tensor embedding_dense_backward(
+Tensor embedding_dense_backward_cpu(
     const Tensor & grad_, const Tensor & indices, int64_t num_weights,
     int64_t padding_idx, bool scale_grad_by_freq) {
 
@@ -89,43 +77,22 @@ Tensor embedding_dense_backward(
   checkScalarType("embedding_backward", indices_arg, kLong);
 
   auto indices_contig = indices.contiguous();
-  int64_t numel = indices_contig.numel();
-  auto flat_indices = indices_contig.view(-1);
+  auto indices_data = indices_contig.data<int64_t>();
+  int64_t numel = indices.numel();
 
   std::unique_ptr<int64_t[]> counts;
   if (scale_grad_by_freq) {
     counts.reset(new int64_t[num_weights]);
     for (int i = 0; i < numel; i++) {
-      counts[flat_indices[i].toCLong()] = 0;
+      counts[indices_data[i]] = 0;
     }
     for (int i = 0; i < numel; i++) {
-      counts[flat_indices[i].toCLong()]++;
+      counts[indices_data[i]]++;
     }
   }
 
   auto grad = grad_.contiguous().view({numel, grad_.size(-1)});
   auto grad_weight = at::zeros({num_weights, grad_.size(-1)}, grad_.options());
-
-  // To mitigate for _OPENMP case.
-  auto update_grad =[&]{
-    for (int64_t i = 0; i < numel; i++) {
-      int64_t k = flat_indices[i].toCLong();
-      if (k != padding_idx) {
-        double scale = 1.0;
-        if (scale_grad_by_freq) {
-          scale /= counts[k];
-        }
-        grad_weight[k].add_(grad[i], scale);
-      }
-    }
-  };
-
-  // Not sure if CUDA tensor will support
-  // the OPENMP case defined below.
-  if (grad.is_cuda()){
-    update_grad();
-    return grad_weight;
-  }
 
 #ifdef _OPENMP
   if (numel > 1000) {
@@ -140,8 +107,8 @@ Tensor embedding_dense_backward(
       int64_t start = tid * (num_weights/nthreads + 1);
       int64_t end = start + (num_weights/nthreads + 1);
       for (int64_t i = 0; i < numel; i++) {
-        int64_t k = flat_indices[i].toCLong();
-        if (k != padding_idx) {
+        if (indices_data[i] != padding_idx) {
+          int64_t k = indices_data[i];
           if (k >= start && k < end) {
             double scale = 1.0;
             if (scale_grad_by_freq) {
@@ -156,8 +123,30 @@ Tensor embedding_dense_backward(
   }
 #endif
 
-  update_grad();
+  for (int64_t i = 0; i < numel; i++) {
+    if (indices_data[i] != padding_idx) {
+      int64_t k = indices_data[i];
+      double scale = 1.0;
+      if (scale_grad_by_freq) {
+        scale /= counts[k];
+      }
+      grad_weight[k].add_(grad[i], scale);
+    }
+  }
+
   return grad_weight;
+}
+
+Tensor embedding_backward_cpu(
+    const Tensor & grad, const Tensor & indices, int64_t num_weights,
+    int64_t padding_idx, bool scale_grad_by_freq, bool sparse) {
+  if (sparse) {
+    return at::native::embedding_sparse_backward(
+        grad, indices, num_weights, padding_idx, scale_grad_by_freq);
+  } else {
+    return at::native::embedding_dense_backward_cpu(
+        grad, indices, num_weights, padding_idx, scale_grad_by_freq);
+  }
 }
 
 Tensor & embedding_renorm_cpu_(

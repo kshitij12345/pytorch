@@ -349,8 +349,8 @@ Tensor _embedding_bag_sparse_backward(
   Tensor index_grad = grad_.index_select(0, offset2bag);
   index_grad = apply_bag_size_backward(offsets, indices, mode, index_grad,
                                        offset2bag, bag_size_);
-  return native::embedding_backward(index_grad, indices, num_weights, -1,
-                                    scale_grad_by_freq, true);
+  return native::embedding_sparse_backward(index_grad, indices, num_weights, -1,
+                                    scale_grad_by_freq);
 }
 }
 } // namespace at::native
