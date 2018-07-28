@@ -2378,6 +2378,7 @@ class TestAutograd(TestCase):
     def test_inplace_index_add_weight(self):
         self._test_inplace_index_add_weight("cpu")
 
+    @unittest.skipIf(not torch.cuda.is_available(), "CUDA unavailable")
     def test_inplace_index_add_weight_cuda(self):
         self._test_inplace_index_add_weight("cuda")
 
