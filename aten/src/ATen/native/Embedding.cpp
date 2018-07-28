@@ -81,12 +81,15 @@ Tensor embedding_dense_backward(
 
   indices_contig = indices_contig.view(-1);
 
-  Tensor counts;
+  Tensor counts = at::ones_like(indices_contig, grad_.type());
   if (scale_grad_by_freq){
-    counts = at::zeros(numel,grad_.type());
-    counts.index_add_(0,indices_contig,at::ones_like(indices_contig, grad_.type()));
-  } else{
-    counts = at::ones_like(indices_contig, grad_.type());
+    Tensor unique, inverse, mask, cnt;
+    std::tie(unique,inverse) = indices_contig._unique();
+    for(int i = 0; i < unique.numel(); i++){
+       mask = indices_contig.eq(unique[i]);
+       cnt  = mask.sum();
+       counts.masked_fill_(mask, cnt);
+    }
   }
 
   auto freq_weight = 1.0 / counts;
