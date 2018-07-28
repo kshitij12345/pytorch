@@ -356,7 +356,7 @@ void THTensor_(indexAdd)(THTensor *tensor, int dim, THLongTensor *index, THTenso
   if (weighted){
     THArgCheck(numel == THTensor_(nElement)(weight), 5, "Length of weight should be equal to length of index");
 #ifndef USE_TH_SIZE_ZERO_DIM
-    THArgCheck(weight->_dim() == 1, 5, "Weight is supposed to be a vector");
+    THArgCheck(THTensor_nDimensionLegacyAll(weight) == 1, 5, "Weight is supposed to be a vector");
 #else
     THArgCheck(weight->dim() == 1, 5,  "Weight is supposed to be a vector");   
 #endif

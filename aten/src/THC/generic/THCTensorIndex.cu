@@ -298,7 +298,7 @@ void THCTensor_(indexAdd)(THCState *state, THCTensor *dst, int dim, THCudaLongTe
     weight = THCTensor_(new)(state);
     THCTensor_(onesLike)(state, weight, indices);
   } else{
-    dims = THCTensor_(_nDimension)(state, weight);
+    dims = THCTensor_(nDimensionLegacyNoScalars)(state, weight);
     THArgCheck(dims == 1, 5, "Weight is supposed to be a vector");
   }
 
