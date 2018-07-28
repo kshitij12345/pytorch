@@ -1793,7 +1793,7 @@ class TestNN(NNTestCase):
         self.assertTrue(embedding.weight.grad.is_sparse)
         self.assertEqual(embedding.weight.grad.shape, embedding.weight.shape)
 
-    def _test_embedding_dense_grad(self, dev):  
+    def _test_embedding_dense_grad(self, dev):
         embd = nn.Embedding(20, 20).to(dev)
         weight = embd.weight
 
