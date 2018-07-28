@@ -325,17 +325,17 @@ Tensor embedding_dense_backward_cuda(const Tensor & grad_, const Tensor & indice
   return grad_weight;
 }
 
-Tensor embedding_backward_cuda(
-  const Tensor & grad, const Tensor & indices, int64_t num_weights,
-  int64_t padding_idx, bool scale_grad_by_freq, bool sparse) {
-  if (sparse) {
-    return at::native::embedding_sparse_backward(
-        grad, indices, num_weights, padding_idx, scale_grad_by_freq);
-  } else {
-    return at::native::embedding_dense_backward_cuda(
-        grad, indices, num_weights, padding_idx, scale_grad_by_freq);
-  }
-}
+// Tensor embedding_backward_cuda(
+//   const Tensor & grad, const Tensor & indices, int64_t num_weights,
+//   int64_t padding_idx, bool scale_grad_by_freq, bool sparse) {
+//   if (sparse) {
+//     return at::native::embedding_sparse_backward(
+//         grad, indices, num_weights, padding_idx, scale_grad_by_freq);
+//   } else {
+//     return at::native::embedding_dense_backward_cuda(
+//         grad, indices, num_weights, padding_idx, scale_grad_by_freq);
+//   }
+// }
 
 Tensor & embedding_renorm_cuda_(Tensor & self, const Tensor & indices,
                                 double max_norm, double norm_type) {
