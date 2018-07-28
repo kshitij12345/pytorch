@@ -73,41 +73,35 @@ Tensor embedding_dense_backward(
     const Tensor & grad_, const Tensor & indices, int64_t num_weights,
     int64_t padding_idx, bool scale_grad_by_freq) {
       
-      auto indices_arg = TensorArg(indices, "indices", 2);
-      checkScalarType("embedding_backward", indices_arg, kLong);
+  auto indices_arg = TensorArg(indices, "indices", 2);
+  checkScalarType("embedding_backward", indices_arg, kLong);
 
-      auto indices_contig = indices.contiguous();
-      int64_t numel = indices_contig.numel();
+  auto indices_contig = indices.contiguous();
+  int64_t numel = indices_contig.numel();
 
-      indices_contig = indices_contig.view(-1);
+  indices_contig = indices_contig.view(-1);
 
-      Tensor counts;
-      if (scale_grad_by_freq){
-        counts = at::zeros(indices.numel(),grad_.type());
-        counts.index_add_(0,indices_contig,at::ones(grad_.type(),indices.numel()));
-      }else{
-        //counts = at::ones(grad_.type(),indices.numel());
-        counts = at::zeros(indices.numel(),grad_.type());
-        counts.fill_(1.0);
-      }
+  Tensor counts;
+  if (scale_grad_by_freq){
+    counts = at::zeros(numel,grad_.type());
+    counts.index_add_(0,indices_contig,at::ones_like(indices_contig, grad_.type()));
+  } else{
+    counts = at::ones_like(indices_contig, grad_.type());
+  }
 
-      auto freq_weight = 1 / counts.index_select(0,indices_contig);
+  auto freq_weight = 1.0 / counts;
 
-      if(padding_idx != -1){
-        //auto padded_mask = at::zeros(indices.numel(),grad_.type());
-        //padded_mask.fill_(padding_idx);
-        //padded_mask = padded_mask.eq(indices_contig);
-        //freq_weight.masked_fill_(padded_mask, 0.0);
-        auto c = (indices == padding_idx);
-        freq_weight.masked_fill_(c, 0.0);
-      }
+  if(padding_idx != -1){
+    auto padding_mask = (indices == padding_idx);
+    freq_weight.masked_fill_(padding_mask, 0.0);
+  }
 
-      auto grad = grad_.contiguous().view({numel, grad_.size(-1)});
-      auto grad_weight = at::zeros({num_weights, grad_.size(-1)}, grad_.options());
+  auto grad = grad_.contiguous().view({numel, grad_.size(-1)});
+  auto grad_weight = at::zeros({num_weights, grad_.size(-1)}, grad_.options());
 
-      grad_weight.index_add_(0, indices_contig, grad, freq_weight);
+  grad_weight.index_add_(0, indices_contig, grad, freq_weight);
 
-      return grad_weight;
+  return grad_weight;
 }
 
 Tensor embedding_backward(
