@@ -9,89 +9,18 @@
 
 namespace torch { namespace jit {
 
-// smart pointer to hold onto at::Retainable objects in a generic way
-// this is close to the implementation of boost's intrusive_ptr
-template<typename PointerType>
-struct Shared {
-  Shared(): Shared(nullptr, false) {}
-  Shared(PointerType * self, bool retain)
-  : pImpl(self) {
-    if(retain && pImpl)
-      pImpl->retain();
-  }
-  Shared(const Shared & rhs)
-  : pImpl(rhs.pImpl) {
-    if (pImpl)
-      pImpl->retain();
-  }
-  Shared(Shared && rhs) noexcept
-  : pImpl(rhs.pImpl) {
-    rhs.pImpl = nullptr;
-  }
-  ~Shared() {
-    if (pImpl)
-      pImpl->release();
-  }
-  Shared & operator=(Shared && rhs) & {
-    rhs.swap(*this);
-    return *this;
-  }
-  Shared & operator=(Shared const & rhs) & {
-      //Shared ctor retains original rhs.pImpl
-      //then rhs.pImpl is swapped with this->pImpl
-      //finally Shared dtor releases rhs.pImpl, which was originally this->pImpl
-      Shared(rhs).swap(*this);
-      return *this;
-  }
-  void reset() {
-    Shared().swap(*this);
-  }
-  void reset(PointerType * rhs) {
-    Shared(rhs, true).swap(*this);
-  }
-  void reset(PointerType * rhs, bool retain) {
-    Shared(rhs, retain).swap(*this);
-  }
-  void swap(Shared & rhs) {
-    PointerType * tmp = pImpl;
-    pImpl = rhs.pImpl;
-    rhs.pImpl = tmp;
-  }
-  PointerType* get() const {
-    return pImpl;
-  }
-  PointerType* detach() {
-    PointerType * ret = pImpl;
-    pImpl = nullptr;
-    return ret;
-  }
-  PointerType& operator*() const {
-    return  *get();
-  }
-  PointerType* operator->() const {
-    return get();
-  }
-  operator bool() const {
-    return pImpl != nullptr;
-  }
-
-  template<typename P>
-  TORCH_API friend std::ostream& operator<<(std::ostream& out, const Shared<P> & v);
-
-private:
-  PointerType * pImpl;
-};
+template <typename T>
+using Shared = c10::intrusive_ptr<T>;
 
 // string
-struct ConstantString : at::Retainable {
+struct TORCH_API ConstantString final : c10::intrusive_ptr_target {
  private:
-  ConstantString(const std::string & str)
-  : str_(str) {}
   const std::string str_;
  public:
-  static Shared<ConstantString> create(const std::string str_) {
-    return Shared<ConstantString>(
-        new ConstantString(str_), false);
+  ConstantString(std::string str)
+  : str_(std::move(str)) {}
+  static c10::intrusive_ptr<ConstantString> create(std::string str_) {
+    return c10::make_intrusive<ConstantString>(std::move(str_));
   }
   const std::string & string() const {
     return str_;
@@ -102,8 +31,26 @@ struct ConstantString : at::Retainable {
   TORCH_API friend std::ostream& operator<<(std::ostream& out, const ConstantString & v);
 };
 
-template<typename T>
-struct ConstantList;
+
+// non-mutable list
+template<typename Elem>
+struct TORCH_API ConstantList final : c10::intrusive_ptr_target {
+ private:
+  const std::vector<Elem> elements_;
+ public:
+  ConstantList(std::vector<Elem> elements_)
+  : elements_(std::move(elements_)) {}
+  static c10::intrusive_ptr<ConstantList<Elem>> create(std::vector<Elem> elements_) {
+    return c10::make_intrusive<ConstantList<Elem>>(std::move(elements_));
+  }
+  const std::vector<Elem>& elements() const {
+    return elements_;
+  }
+  operator const std::vector<Elem>&() const {
+    return elements();
+  }
+};
+
 struct IValue;
 using Tuple = ConstantList<IValue>;
 using IntList = ConstantList<int64_t>;
@@ -114,43 +61,44 @@ using DoubleList = ConstantList<double>;
 // all value types.
 // It is a 16-byte object with an 8-byte payload and an 8-byte tag.
 // The tag is currently 4 bytes to determine the type, and 1 byte
-// to mark whether that type is a subtype of at::Retainable and needs
+// to mark whether that type is a subtype of c10::intrusive_ptr_target and needs
 // retain/release calls.
 
 #define TORCH_FORALL_TAGS(_) \
   _(None) _(Tensor) _(Double) _(Int) _(Tuple) _(IntList) _(DoubleList) _(String) _(TensorList)
 
-struct IValue {
+struct TORCH_API IValue final {
   IValue()
-  : payload(0)
+  : payload{0}
   , tag(Tag::None)
-  , retainable(false) {}
+  , is_intrusive_ptr(false) {}
   IValue(const IValue& rhs)
       : payload(rhs.payload),
         tag(rhs.tag),
-        retainable(rhs.retainable) {
-    if (retainable)
-      as_retainable->retain();
+        is_intrusive_ptr(rhs.is_intrusive_ptr) {
+    if (is_intrusive_ptr) {
+      c10::raw::intrusive_ptr::incref(payload.as_intrusive_ptr);
+    }
   }
   IValue(IValue&& rhs) noexcept : IValue() {
     swap(rhs);
   }
   ~IValue() {
-    if (retainable) {
-      as_retainable->release();
+    if (is_intrusive_ptr) {
+      c10::raw::intrusive_ptr::decref(payload.as_intrusive_ptr);
     }
   }
-  IValue & operator=(IValue && rhs) & {
-    rhs.swap(*this);
+  IValue & operator=(IValue && rhs) & noexcept {
+    IValue(std::move(rhs)).swap(*this); // this also sets rhs to None
     return *this;
   }
   IValue & operator=(IValue const & rhs) & {
-      IValue(rhs).swap(*this);
-      return *this;
+    IValue(rhs).swap(*this);
+    return *this;
   }
-  void swap(IValue & rhs) {
+  void swap(IValue & rhs) noexcept {
     std::swap(payload, rhs.payload);
-    std::swap(retainable, rhs.retainable);
+    std::swap(is_intrusive_ptr, rhs.is_intrusive_ptr);
     std::swap(tag, rhs.tag);
   }
   // Accessors for subtypes are arranged together below
@@ -159,50 +107,51 @@ struct IValue {
 
   // Tensor
   IValue(at::Tensor t)
-  : tag(Tag::Tensor), retainable(t.defined())  {
-    // note: the undefined tensor is not refcounted, so while it
-    // is tagged as a tensor, retainable is set to false.
-    as_tensor_impl = t.at::detail::TensorBase::detach();
+  : tag(Tag::Tensor), is_intrusive_ptr(t.defined())  {
+    // Note: the undefined tensor is not refcounted, so while it
+    // is tagged as a tensor, is_intrusive_ptr is set to false.
+    // This is not an optional optimization: our incref call
+    // *will not* do the right thing when called on an
+    // undefined tensor.
+    payload.as_intrusive_ptr = t.unsafeReleaseTensorImpl();
   }
   bool isTensor() const { return Tag::Tensor == tag; }
   at::Tensor toTensor() && {
     JIT_ASSERT(isTensor());
-    at::Tensor t(as_tensor_impl, /*retain=*/false);
-    clearToNone();
-    return t;
+    return at::Tensor(moveToIntrusivePtr<at::TensorImpl, at::UndefinedTensorImpl>());
   }
   at::Tensor toTensor() const & {
     JIT_ASSERT(isTensor());
-    return at::Tensor(as_tensor_impl, /*retain=*/true);
+    return at::Tensor(toIntrusivePtr<at::TensorImpl, at::UndefinedTensorImpl>());
   }
 
   // Tuple
-  IValue(Shared<Tuple> v);
+  IValue(c10::intrusive_ptr<Tuple> v);
   bool isTuple() const { return Tag::Tuple == tag; }
-  Shared<Tuple> toTuple() && {
+  c10::intrusive_ptr<Tuple> toTuple() && {
     JIT_ASSERT(isTuple());
-    return moveToRetainable<Tuple>();
+    return moveToIntrusivePtr<Tuple>();
   }
-  Shared<Tuple> toTuple() const & {
+  c10::intrusive_ptr<Tuple> toTuple() const & {
     JIT_ASSERT(isTuple());
-    return toRetainable<Tuple>();
+    return toIntrusivePtr<Tuple>();
   }
 
   // Double
   IValue(double d)
-  : tag(Tag::Double), retainable(false) {
-    as_double = d;
+  : tag(Tag::Double), is_intrusive_ptr(false) {
+    payload.as_double = d;
   }
   bool isDouble() const { return Tag::Double == tag; }
   double toDouble() const {
     JIT_ASSERT(isDouble());
-    return as_double;
+    return payload.as_double;
   }
 
   // Int
   IValue(int64_t i)
-  : tag(Tag::Int), retainable(false) {
-    as_int = i;
+  : tag(Tag::Int), is_intrusive_ptr(false) {
+    payload.as_int = i;
   }
 
   // allow you to pass literals (3, 4) without ambiguity
@@ -215,22 +164,22 @@ struct IValue {
 
   int64_t toInt() const {
     JIT_ASSERT(isInt());
-    return as_int;
+    return payload.as_int;
   }
 
   // IntList
-  IValue(Shared<IntList> v);
+  IValue(c10::intrusive_ptr<IntList> v);
   IValue(std::vector<int64_t> v);
   IValue(at::ArrayRef<int64_t> v)
-  : IValue(std::vector<int64_t>(v.begin(), v.end())) {}
+  : IValue(v.vec()) {}
   bool isIntList() const { return Tag::IntList == tag; }
-  Shared<IntList> toIntList() && {
+  c10::intrusive_ptr<IntList> toIntList() && {
     JIT_ASSERT(isIntList());
-    return moveToRetainable<IntList>();
+    return moveToIntrusivePtr<IntList>();
   }
-  Shared<IntList> toIntList() const & {
+  c10::intrusive_ptr<IntList> toIntList() const & {
     JIT_ASSERT(isIntList());
-    return toRetainable<IntList>();
+    return toIntrusivePtr<IntList>();
   }
 
   const std::vector<int64_t>& toIntListRef() const;
@@ -238,42 +187,42 @@ struct IValue {
   const std::vector<at::Tensor>& toTensorListRef() const;
 
   // ConstantString
-  IValue(Shared<ConstantString> v);
-  IValue(const std::string& v);
+  IValue(c10::intrusive_ptr<ConstantString> v);
+  IValue(std::string v);
   bool isString() const { return Tag::String == tag; }
-  Shared<ConstantString> toString() && {
+  c10::intrusive_ptr<ConstantString> toString() && {
     JIT_ASSERT(isString());
-    return moveToRetainable<ConstantString>();
+    return moveToIntrusivePtr<ConstantString>();
   }
-  Shared<ConstantString> toString() const & {
+  c10::intrusive_ptr<ConstantString> toString() const & {
     JIT_ASSERT(isString());
-    return toRetainable<ConstantString>();
+    return toIntrusivePtr<ConstantString>();
   }
 
   // DoubleList
-  IValue(Shared<DoubleList> v);
+  IValue(c10::intrusive_ptr<DoubleList> v);
   IValue(std::vector<double> v);
   bool isDoubleList() const { return Tag::DoubleList == tag; }
-  Shared<DoubleList> toDoubleList() && {
+  c10::intrusive_ptr<DoubleList> toDoubleList() && {
     JIT_ASSERT(isDoubleList());
-    return moveToRetainable<DoubleList>();
+    return moveToIntrusivePtr<DoubleList>();
   }
-  Shared<DoubleList> toDoubleList() const & {
+  c10::intrusive_ptr<DoubleList> toDoubleList() const & {
     JIT_ASSERT(isDoubleList());
-    return toRetainable<DoubleList>();
+    return toIntrusivePtr<DoubleList>();
   }
 
   //TensorList
-  IValue(Shared<TensorList> v);
+  IValue(c10::intrusive_ptr<TensorList> v);
   IValue(std::vector<at::Tensor> v);
   bool isTensorList() const { return Tag::TensorList == tag; }
-  Shared<TensorList> toTensorList() && {
+  c10::intrusive_ptr<TensorList> toTensorList() && {
     JIT_ASSERT(isTensorList());
-    return moveToRetainable<TensorList>();
+    return moveToIntrusivePtr<TensorList>();
   }
-  Shared<TensorList> toTensorList() const & {
+  c10::intrusive_ptr<TensorList> toTensorList() const & {
     JIT_ASSERT(isTensorList());
-    return toRetainable<TensorList>();
+    return toIntrusivePtr<TensorList>();
   }
 
   // None
@@ -343,32 +292,31 @@ private:
 #undef DEFINE_TAG
   };
 
-  template<typename T>
-  Shared<T> moveToRetainable() {
-    Shared<T> t(static_cast<T*>(as_retainable), false);
+  template<class T, class NullType = c10::detail::intrusive_target_default_null_type<T>>
+  c10::intrusive_ptr<T, NullType> moveToIntrusivePtr() {
+    auto t = c10::intrusive_ptr<T, NullType>::reclaim(static_cast<T*>(payload.as_intrusive_ptr));
     clearToNone();
     return t;
   }
-  template<typename T>
-  Shared<T> toRetainable() const {
-    return Shared<T>(static_cast<T*>(as_retainable), true);
+  template<typename T, class NullType = c10::detail::intrusive_target_default_null_type<T>>
+  c10::intrusive_ptr<T, NullType> toIntrusivePtr() const {
+    auto r = c10::intrusive_ptr<T, NullType>::reclaim(static_cast<T*>(payload.as_intrusive_ptr));
+    auto p = r;
+    r.release();
+    return p;
   }
   void clearToNone() {
-    payload = 0;
+    payload.as_int = 0;
     tag = Tag::None;
-    retainable = false;
+    is_intrusive_ptr = false;
   }
   union {
-    at::TensorImpl* as_tensor_impl;
-    at::Retainable* as_retainable;
-    double as_double;
     int64_t as_int;
-    // this type should be as big as all the other types because it will
-    // be used to copy the union's value in certain cases
-    int64_t payload;
-  };
+    double as_double;
+    c10::intrusive_ptr_target* as_intrusive_ptr;
+  } payload;
   Tag tag;
-  bool retainable;
+  bool is_intrusive_ptr;
 };
 
 #undef TORCH_FORALL_TAGS
@@ -384,13 +332,13 @@ inline type IValue::to<type>() const & { \
   return this->method_name(); \
 }
 DEFINE_TO(at::Tensor, toTensor)
-DEFINE_TO(Shared<Tuple>, toTuple)
+DEFINE_TO(c10::intrusive_ptr<Tuple>, toTuple)
 DEFINE_TO(double, toDouble)
 DEFINE_TO(int64_t, toInt)
-DEFINE_TO(Shared<DoubleList>, toDoubleList)
-DEFINE_TO(Shared<IntList>, toIntList)
-DEFINE_TO(Shared<TensorList>, toTensorList)
-DEFINE_TO(Shared<ConstantString>, toString)
+DEFINE_TO(c10::intrusive_ptr<DoubleList>, toDoubleList)
+DEFINE_TO(c10::intrusive_ptr<IntList>, toIntList)
+DEFINE_TO(c10::intrusive_ptr<TensorList>, toTensorList)
+DEFINE_TO(c10::intrusive_ptr<ConstantString>, toString)
 DEFINE_TO(at::Scalar, toScalar)
 DEFINE_TO(bool, toInt)
 DEFINE_TO(std::vector<int64_t>, toIntListRef)
@@ -399,59 +347,64 @@ DEFINE_TO(std::vector<at::Tensor>, toTensorListRef)
 
 #undef DEFINE_TO
 
-// non-mutable list
-template<typename Elem>
-struct ConstantList : at::Retainable {
- private:
-  ConstantList(std::vector<Elem> elements_)
-  : elements_(std::move(elements_)) {}
-  std::vector<Elem> elements_;
- public:
-  static Shared<ConstantList<Elem>> create(std::vector<Elem> elements_) {
-    return Shared<ConstantList<Elem>>(
-        new ConstantList<Elem>(std::move(elements_)), false);
-  }
-  const std::vector<Elem>& elements() const {
-    return elements_;
-  }
-  operator const std::vector<Elem>&() const {
-    return elements();
-  }
-
-  template<typename E>
-  TORCH_API friend std::ostream& operator<<(std::ostream& out, const ConstantList<E> & v);
-};
-
-
-inline IValue::IValue(Shared<Tuple> v)
-: tag(Tag::Tuple), retainable(true) {
-  as_retainable = v.detach();
+#define DEFINE_TO_WITH_BODY(type, body) \
+template<> \
+inline type IValue::to<type>() && { \
+  body(std::move(*this)); \
+} \
+template<> \
+inline type IValue::to<type>() const & { \
+  body((*this)); \
 }
 
-inline IValue::IValue(Shared<IntList> v)
-: tag(Tag::IntList), retainable(true) {
-  as_retainable = v.detach();
+#define SCALAR_TYPE_BODY(this) return static_cast<at::ScalarType>(this.toInt());
+#define LAYOUT_BODY(this) return static_cast<at::Layout>(this.toInt());
+#define DEVICE_BODY(this) \
+  /* NB: const_list might be a move of the vector, so we need to */ \
+  /*     assign it to prevent its deallocation.                  */ \
+  auto && const_list = this.toIntList(); \
+  const auto & elems = const_list->elements(); \
+  JIT_ASSERT(elems.size() == 2); \
+  return at::Device(static_cast<at::Device::Type>(elems[0]), elems[1]);
+
+DEFINE_TO_WITH_BODY(at::ScalarType, SCALAR_TYPE_BODY)
+DEFINE_TO_WITH_BODY(at::Layout, LAYOUT_BODY)
+DEFINE_TO_WITH_BODY(at::Device, DEVICE_BODY)
+
+#undef DEFINE_TO_WITH_BODY
+#undef SCALAR_TYPE_BODY
+#undef LAYOUT_BODY
+#undef DEVICE_BODY
+
+inline IValue::IValue(c10::intrusive_ptr<Tuple> v)
+: tag(Tag::Tuple), is_intrusive_ptr(true) {
+  payload.as_intrusive_ptr = v.release();
+}
+
+inline IValue::IValue(c10::intrusive_ptr<IntList> v)
+: tag(Tag::IntList), is_intrusive_ptr(true) {
+  payload.as_intrusive_ptr = v.release();
 }
 inline IValue::IValue(std::vector<int64_t> v)
 : IValue(IntList::create(std::move(v))) {}
 
-inline IValue::IValue(Shared<ConstantString> v)
-: tag(Tag::String), retainable(true) {
-  as_retainable = v.detach();
+inline IValue::IValue(c10::intrusive_ptr<ConstantString> v)
+: tag(Tag::String), is_intrusive_ptr(true) {
+  payload.as_intrusive_ptr = v.release();
 }
-inline IValue::IValue(const std::string& v)
-: IValue(ConstantString::create(v)) {}
+inline IValue::IValue(std::string v)
+: IValue(ConstantString::create(std::move(v))) {}
 
-inline IValue::IValue(Shared<DoubleList> v)
-: tag(Tag::DoubleList), retainable(true) {
-  as_retainable = v.detach();
+inline IValue::IValue(c10::intrusive_ptr<DoubleList> v)
+: tag(Tag::DoubleList), is_intrusive_ptr(true) {
+  payload.as_intrusive_ptr = v.release();
 }
 inline IValue::IValue(std::vector<double> v)
 : IValue(DoubleList::create(std::move(v))) {}
 
-inline IValue::IValue(Shared<TensorList> v)
-: tag(Tag::TensorList), retainable(true) {
-  as_retainable = v.detach();
+inline IValue::IValue(c10::intrusive_ptr<TensorList> v)
+: tag(Tag::TensorList), is_intrusive_ptr(true) {
+  payload.as_intrusive_ptr = v.release();
 }
 inline IValue::IValue(std::vector<at::Tensor> v)
 : IValue(TensorList::create(std::move(v))) {}

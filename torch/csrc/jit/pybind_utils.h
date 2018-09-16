@@ -7,6 +7,7 @@
 #include "torch/csrc/jit/type.h"
 #include "torch/csrc/jit/operator.h"
 #include "torch/csrc/utils/pybind.h"
+#include "torch/csrc/utils/auto_gil.h"
 
 #include <ATen/Error.h>
 
@@ -18,6 +19,12 @@
 
 namespace torch { namespace jit {
 namespace detail {
+
+// error reporting: when reporting user-caused errors, these functions should
+// not use AT_ERROR macros, since these macros add stack trace information
+// that is confusing to display to the end user since it always reports
+// locations in libtorch code rather than user code.
+
 inline void findErrorInKwargs(
     const FunctionSchema& schema,
     py::kwargs kwargs) {
@@ -26,22 +33,22 @@ inline void findErrorInKwargs(
   // any argument in the schema.
   for (const auto& kwarg : kwargs) {
     const auto key = py::cast<std::string>(kwarg.first);
-    AT_CHECK(
-        std::count_if(
+    if(!std::count_if(
             arguments.begin(),
             arguments.end(),
-            [&key](const Argument& argument) { return argument.name == key; }),
-        "Unknown keyword argument '", key, "' for operator '",
-        schema.name, "'. Schema: ", schema);
+            [&key](const Argument& argument) { return argument.name == key; })) {
+        throw std::runtime_error(at::str("Unknown keyword argument '", key, "' for operator '",
+        schema.name, "'. Schema: ", schema));
+    }
   }
   // If there are unconsumed kwargs but none of them were unknown, the first
   // positional argument present in the kwargs is duplicated.
   for (const auto& argument : arguments) {
     if (kwargs.contains(argument.name.c_str())) {
       AT_ASSERT(!argument.default_value);
-      AT_ERROR(
+      throw std::runtime_error(at::str(
           "Argument '", argument.name, "' specified both as positional and ",
-          "keyword argument. Schema: ", schema);
+          "keyword argument. Schema: ", schema));
     }
   }
 }
@@ -49,7 +56,11 @@ inline void findErrorInKwargs(
 
 inline IValue toIValue(py::handle input) {
   if (THPVariable_Check(input.ptr())) {
-    return py::cast<at::Tensor>(input);
+    auto ten = py::cast<at::Tensor>(input);
+    if (ten.is_sparse()) {
+      AT_ERROR("sparse tensors not supported");
+    }
+    return ten;
   } else if (py::isinstance<py::tuple>(input)) {
     py::tuple input_tuple = py::cast<py::tuple>(input);
     Stack s;
@@ -59,7 +70,8 @@ inline IValue toIValue(py::handle input) {
     }
     return Tuple::create(s);
   } else {
-    AT_ERROR("Only tensors and tuples of tensors are supported as inputs to traced functions");
+    AT_ERROR("Only tensors and (possibly nested) tuples of tensors are supported "
+             "as inputs or outputs of traced functions");
   }
 }
 
@@ -67,12 +79,27 @@ inline Stack toStack(const py::tuple& inputs) {
   return toIValue(inputs).toTuple()->elements();
 }
 
+inline IValue toIValue(py::handle obj, const TypePtr& type);
+
+inline IValue createGenericList(py::handle obj, const TypePtr& elem_type) {
+  std::vector<IValue> elems;
+  for(auto elem : obj) {
+    elems.push_back(toIValue(elem, elem_type));
+  }
+  return ConstantList<IValue>::create(std::move(elems));
+}
+
 inline IValue toIValue(py::handle obj, const TypePtr& type) {
     switch (type->kind()) {
       case TypeKind::DynamicType:
       case TypeKind::TensorType:
-      case TypeKind::CompleteTensorType:
-        return py::cast<autograd::Variable>(obj);
+      case TypeKind::CompleteTensorType: {
+        auto var = py::cast<autograd::Variable>(obj);
+        if (var.is_sparse()) {
+          AT_ERROR("sparse tensors not supported");
+        }
+        return var;
+      }
       case TypeKind::FloatType:
         return py::cast<double>(obj);
       case TypeKind::IntType:
@@ -80,11 +107,14 @@ inline IValue toIValue(py::handle obj, const TypePtr& type) {
       case TypeKind::NoneType:
         return {};
       case TypeKind::TupleType: {
+        if(!PyTuple_Check(obj.ptr()))
+          throw py::cast_error(); // note: the py::cast does not throw cast_error
+                                  // because it attempts to iterate a non-tuple
         py::tuple tuple = py::cast<py::tuple>(obj);
         size_t tuple_size = tuple.size();
         const auto & elem_types = type->cast<TupleType>()->elements();
         if (elem_types.size() != tuple_size) {
-          AT_ERROR("Expected ", elem_types.size(), " tuple elements for argument, but got ", tuple_size);
+          throw py::cast_error();
         }
         std::vector<IValue> values;
         values.reserve(tuple_size);
@@ -94,26 +124,58 @@ inline IValue toIValue(py::handle obj, const TypePtr& type) {
         return Tuple::create(std::move(values));
       }
       case TypeKind::StringType:
-      case TypeKind::ListType:
-        AT_ERROR("Lists and strings are not supported yet");
+        return ConstantString::create(py::cast<std::string>(obj));
+      case TypeKind::ListType: {
+        const auto& elem_type = type->expect<ListType>()->getElementType();
+        switch(elem_type->kind()) {
+          case TypeKind::IntType:
+            return py::cast<std::vector<int64_t>>(obj);
+          case TypeKind::FloatType:
+            return py::cast<std::vector<double>>(obj);
+          case TypeKind::TensorType:
+          case TypeKind::DynamicType:
+            return py::cast<std::vector<at::Tensor>>(obj);
+          default:
+            return createGenericList(obj, elem_type);
+        }
+      }
       case TypeKind::NumberType:
-        AT_ERROR("Insufficient type information to convert input");
+      case TypeKind::GeneratorType:
+        break;
     }
-  AT_ERROR("Missing cases in toIValue! File a bug report.");
+  AT_ERROR("Missing cases in toIValue for type: ", type->str(), "! File a bug report.");
 }
 
 inline IValue argumentToIValue(
+    const FunctionSchema& schema,
     size_t argumentPosition,
-    const Argument& argument,
     py::handle object) {
+  const auto& argument = schema.arguments.at(argumentPosition);
   try {
     return toIValue(object, argument.type);
   } catch (const py::cast_error& error) {
-    AT_ERROR(
-        "Expected value of type ", *argument.type,
+    throw std::runtime_error(at::str(
+        schema.name, "() expected value of type ", argument.type->str(),
         " for argument '", argument.name,
         "' in position ", argumentPosition,
-        ", but instead got value of type ", object.get_type().str());
+        ", but instead got value of type ",
+        py::str(object.get_type().attr("__name__")), ".",
+        "\nValue: ", py::repr(object),
+        "\nDeclaration: ", schema));
+  }
+}
+
+inline IValue returnToIValue(
+    const TypePtr& type,
+    py::handle object) {
+  try {
+    return toIValue(object, type);
+  } catch (const py::cast_error& error) {
+    throw std::runtime_error(at::str(
+        " expected value of type ", type->str(),
+        " for return value but instead got value of type ",
+        py::str(object.get_type().attr("__name__")), ".",
+          "\nValue: ", py::repr(object)));
   }
 }
 
@@ -121,7 +183,11 @@ inline py::object toPyObject(IValue&& ivalue) {
   if (ivalue.isNone()) {
     return py::none();
   } else if (ivalue.isTensor()) {
-    return py::cast(autograd::Variable(ivalue.toTensor()));
+    auto tensor = std::move(ivalue).toTensor();
+    if (tensor.is_sparse()) {
+      AT_ERROR("sparse tensors not supported");
+    }
+    return py::cast(autograd::Variable(std::move(tensor)));
   } else if (ivalue.isDouble()) {
     return py::cast(ivalue.toDouble());
   } else if (ivalue.isInt()) {
@@ -149,19 +215,19 @@ inline Stack createStackForSchema(
     const FunctionSchema& schema,
     py::args args,
     py::kwargs kwargs = py::kwargs()) {
-  AT_CHECK(
-      args.size() + kwargs.size() <= schema.arguments.size(),
-      "Expected at most ", schema.arguments.size(),
-      " argument(s) for operator '", schema.name, "', but received ",
-      args.size(), " argument(s). Schema: ", schema);
-
+  if(args.size() + kwargs.size() > schema.arguments.size()) {
+    throw std::runtime_error(at::str(
+        schema.name, "() expected at most ", schema.arguments.size(),
+        " argument(s) but received ",
+        args.size() + kwargs.size(), " argument(s). Declaration: ", schema));
+  }
   Stack stack;
   stack.reserve(schema.arguments.size());
 
   // First push all positional args.
   for (size_t i = 0; i < args.size(); ++i) {
     // Use the type information from the schema to convert the PyObject.
-    push(stack, argumentToIValue(i, schema.arguments[i], args[i]));
+    push(stack, argumentToIValue(schema, i, args[i]));
   }
 
   // Now for every remaining non-positional argument in the schema, look for it
@@ -171,15 +237,14 @@ inline Stack createStackForSchema(
   for (size_t i = args.size(); i < schema.arguments.size(); ++i) {
     const auto& arg = schema.arguments[i];
     if (kwargs.contains(arg.name.c_str())) {
-      push(stack, argumentToIValue(i, arg, kwargs[arg.name.c_str()]));
+      push(stack, argumentToIValue(schema, i, kwargs[arg.name.c_str()]));
       consumed_kwargs += 1;
     } else if (arg.default_value) {
       push(stack, *arg.default_value);
     } else {
-      AT_ERROR(
-          "Missing value for argument '", arg.name,
-          "' to operator '", schema.name,
-          "'. Schema: ", schema);
+      throw std::runtime_error(at::str(
+          schema.name, "() is missing value for argument '", arg.name,
+          "'. Declaration: ", schema));
     }
   }
 
@@ -226,10 +291,12 @@ inline Stack evilDeprecatedBadCreateStackDoNotUse(const py::tuple& tuple, at::Ar
 
 inline py::object invokeScriptMethodFromPython(
     script::Method& method,
-    py::args args) {
-  auto relevant_inputs = method.graph()->inputs().slice(0, method.num_inputs());
-  auto stack = evilDeprecatedBadCreateStackDoNotUse(args, relevant_inputs);
-  method.run(stack);
+    py::args args, py::kwargs kwargs) {
+  auto stack = createStackForSchema(method.getSchema(), std::move(args), std::move(kwargs));
+  {
+    AutoNoGIL no_gil_guard;
+    method.run(stack);
+  }
   return createPyObjectForStack(std::move(stack));
 }
 
@@ -237,18 +304,13 @@ inline py::object invokeOperatorFromPython(
     const Operator& op,
     py::args args,
     py::kwargs kwargs) {
-  try {
-    // Create a stack full of the arguments and keyword arguments.
-    auto stack =
-        createStackForSchema(op.schema(), std::move(args), std::move(kwargs));
+  // Create a stack full of the arguments and keyword arguments.
+  auto stack =
+      createStackForSchema(op.schema(), std::move(args), std::move(kwargs));
 
-    // Invoke the operation, which puts the return values onto the stack.
-    op.getOperation()(stack);
+  // Invoke the operation, which puts the return values onto the stack.
+  op.getOperation()(stack);
 
-    return createPyObjectForStack(std::move(stack));
-  } catch (const at::Error& error) {
-    // We don't want to show the backtrace in the error message in Python.
-    throw std::runtime_error(error.what_without_backtrace());
-  }
+  return createPyObjectForStack(std::move(stack));
 }
 }}  // namespace torch::jit
