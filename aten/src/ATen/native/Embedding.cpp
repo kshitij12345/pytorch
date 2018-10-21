@@ -14,6 +14,15 @@
 
 namespace at { namespace native {
 
+Tensor embedding_dense_double_backward(
+    const Tensor & grad, const Tensor & indices) {
+  
+  // Since first backward takes care of padding_idx
+  // and scaling by frequency, we don't need to worry
+  // about it here.
+  return  grad.index_select(0, indices.flatten());
+}
+
 Tensor embedding(const Tensor & weight, const Tensor & indices,
                  int64_t padding_idx, bool scale_grad_by_freq, bool sparse) {
   auto indices_arg = TensorArg(indices, "indices", 1);
