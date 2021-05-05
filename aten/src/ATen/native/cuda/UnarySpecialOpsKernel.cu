@@ -30,7 +30,7 @@ void exp2_kernel_cuda(TensorIteratorBase& iter) {
 void i0_kernel_cuda(TensorIteratorBase& iter) {
   AT_DISPATCH_FLOATING_TYPES_AND2(ScalarType::Half, ScalarType::BFloat16, iter.dtype(), "i0_cuda", [&]() {
     gpu_kernel(iter, []GPU_LAMBDA(scalar_t a) -> scalar_t {
-      return calc_i0(a);
+      return calc_i0<scalar_t, /*is_cuda=*/true>(a);
     });
   });
 }
@@ -38,7 +38,7 @@ void i0_kernel_cuda(TensorIteratorBase& iter) {
 void i0e_kernel_cuda(TensorIteratorBase& iter) {
   AT_DISPATCH_FLOATING_TYPES_AND2(ScalarType::Half, ScalarType::BFloat16, iter.common_dtype(), "i0e_cuda", [&]() {
     gpu_kernel(iter, []GPU_LAMBDA(scalar_t a) -> scalar_t {
-      return calc_i0e(a);
+      return calc_i0e<scalar_t, /*is_cuda=*/true>(a);
     });
   });
 }
@@ -46,7 +46,7 @@ void i0e_kernel_cuda(TensorIteratorBase& iter) {
 void i1_kernel_cuda(TensorIteratorBase& iter) {
   AT_DISPATCH_FLOATING_TYPES(iter.common_dtype(), "i1_cuda", [&]() {
     gpu_kernel(iter, []GPU_LAMBDA(scalar_t a) -> scalar_t {
-      return calc_i1(a);
+      return calc_i1<scalar_t, /*is_cuda=*/true>(a);
     });
   });
 }
@@ -54,7 +54,7 @@ void i1_kernel_cuda(TensorIteratorBase& iter) {
 void i1e_kernel_cuda(TensorIteratorBase& iter) {
   AT_DISPATCH_FLOATING_TYPES(iter.common_dtype(), "i1e_cuda", [&]() {
     gpu_kernel(iter, []GPU_LAMBDA(scalar_t a) -> scalar_t {
-      return calc_i1e(a);
+      return calc_i1e<scalar_t, /*is_cuda=*/true>(a);
     });
   });
 }

@@ -6,6 +6,7 @@
 #include <cfloat>
 #include <limits>
 #include <type_traits>
+#include <ATen/AccumulateType.h>
 #include <c10/util/BFloat16.h>
 #include <c10/util/Half.h>
 #include <c10/util/MathConstants.h>
@@ -1170,7 +1171,7 @@ calc_gcd(T a, T b) {
  * required is x -> 2(2ab/x - b - a)/(b-a).  If b is infinity, this becomes x -> 4a/x - 1.
  */
 template <typename T>
-static inline typename std::enable_if<std::is_floating_point<T>::value, T>::type
+static C10_HOST_DEVICE inline typename std::enable_if<std::is_floating_point<T>::value, T>::type
 chbevl(const T x, const T array[], size_t len) {
   T b0, b1, b2;
 
@@ -1196,7 +1197,7 @@ chbevl(const T x, const T array[], size_t len) {
  * of all inputs to convert them into the domain of the approximation.
  */
 template <typename T>
-inline std::tuple<const T*, size_t> chebyshev_coefficients_i0e_A() {
+C10_HOST_DEVICE inline std::tuple<const T*, size_t> chebyshev_coefficients_i0e_A() {
   /* Chebyshev coefficients for exp(-x) I0(x)
    * in the interval [0,8].
    *
@@ -1222,7 +1223,7 @@ inline std::tuple<const T*, size_t> chebyshev_coefficients_i0e_A() {
 };
 
 template <typename T>
-inline std::tuple<const T*, size_t> chebyshev_coefficients_i0e_B() {
+C10_HOST_DEVICE inline std::tuple<const T*, size_t> chebyshev_coefficients_i0e_B() {
   /* Chebyshev coefficients for exp(-x) sqrt(x) I0(x)
    * in the inverted interval [8,infinity].
    *
@@ -1247,7 +1248,7 @@ inline std::tuple<const T*, size_t> chebyshev_coefficients_i0e_B() {
 };
 
 template <typename T>
-inline typename std::enable_if<std::is_same<double, T>::value, std::tuple<const T*, size_t>>::type
+C10_HOST_DEVICE inline typename std::enable_if<std::is_same<double, T>::value, std::tuple<const T*, size_t>>::type
 chebyshev_coefficients_i1e_A() {
   /* Chebyshev coefficients for exp(-x) I1(x)
    * in the interval [0,8].
@@ -1274,7 +1275,7 @@ chebyshev_coefficients_i1e_A() {
 };
 
 template <typename T>
-inline typename std::enable_if<std::is_same<float, T>::value, std::tuple<const T*, size_t>>::type
+C10_HOST_DEVICE inline typename std::enable_if<std::is_same<float, T>::value, std::tuple<const T*, size_t>>::type
 chebyshev_coefficients_i1e_A() {
   /* Chebyshev coefficients for exp(-x) I1(x)
    * in the interval [0,8].
@@ -1303,7 +1304,7 @@ chebyshev_coefficients_i1e_A() {
 };
 
 template <typename T>
-inline typename std::enable_if<std::is_same<double, T>::value, std::tuple<const T*, size_t>>::type
+C10_HOST_DEVICE inline typename std::enable_if<std::is_same<double, T>::value, std::tuple<const T*, size_t>>::type
 chebyshev_coefficients_i1e_B() {
   /* Chebyshev coefficients for exp(-x) sqrt(x) I1(x)
    * in the inverted interval [8,infinity].
@@ -1329,7 +1330,7 @@ chebyshev_coefficients_i1e_B() {
 };
 
 template <typename T>
-inline typename std::enable_if<std::is_same<float, T>::value, std::tuple<const T*, size_t>>::type
+C10_HOST_DEVICE inline typename std::enable_if<std::is_same<float, T>::value, std::tuple<const T*, size_t>>::type
 chebyshev_coefficients_i1e_B() {
   /* Chebyshev coefficients for exp(-x) sqrt(x) I1(x)
    * in the inverted interval [8,infinity].
@@ -1348,27 +1349,27 @@ chebyshev_coefficients_i1e_B() {
   return std::make_tuple(coeff, 7);
 };
 
-template <typename T>
-static inline typename std::enable_if<std::is_floating_point<T>::value, T>::type
-calc_i0(T _x) {
-  T x = std::abs(_x);
+template <typename T, bool is_cuda = false>
+static inline C10_HOST_DEVICE T calc_i0(T _x) {
+  // Upcast input for numerical accuracy purposes
+  // Needed for accurate results if input is bfloat16 or float16
+  using acc_t = at::acc_type<T, is_cuda>;
+  acc_t x = std::abs(_x);
 
   if (x <= 8.0) {
-    auto coeff_pair = chebyshev_coefficients_i0e_A<T>();
+    auto coeff_pair = chebyshev_coefficients_i0e_A<acc_t>();
     auto A = std::get<0>(coeff_pair);
     auto len = std::get<1>(coeff_pair);
-    T y = (x / 2.0) - 2.0;
-    return static_cast<T>(std::exp(x) * chbevl(y, A, len));
+    acc_t y = (x / 2.0) - 2.0;
+    return static_cast<acc_t>(std::exp(x) * chbevl(y, A, len));
   }
-  auto coeff_pair = chebyshev_coefficients_i0e_B<T>();
+  auto coeff_pair = chebyshev_coefficients_i0e_B<acc_t>();
   auto B = std::get<0>(coeff_pair);
   auto len = std::get<1>(coeff_pair);
-  return static_cast<T>(
-      std::exp(x) * chbevl(static_cast<T>(32.0 / x - 2.0), B, len) / std::sqrt(x));
+  return static_cast<acc_t>(
+      std::exp(x) * chbevl(static_cast<acc_t>(32.0 / x - 2.0), B, len) /
+      std::sqrt(x));
 }
-
-// Upcast bfloat16 input to float for numerical accuracy purposes
-inline c10::BFloat16 calc_i0(c10::BFloat16 a) { return calc_i0(static_cast<float>(a)); }
 
 /*
  * This function is derived from the implementation of the i0e function in the Cephes Math Library.
@@ -1379,28 +1380,27 @@ inline c10::BFloat16 calc_i0(c10::BFloat16 a) { return calc_i0(static_cast<float
  * One approximates the function over [0, 8], and the other over (8, infinity). This function takes the absolute value
  * of all inputs to convert them into the domain of the approximation.
  */
-template <typename T>
-static inline typename std::enable_if<std::is_floating_point<T>::value, T>::type
-calc_i0e(T _x) {
-  T x = std::abs(_x);
+template <typename T, bool is_cuda = false>
+static C10_HOST_DEVICE inline T calc_i0e(T _x) {
+  // Upcast input for numerical accuracy purposes
+  // Needed for accurate results if input is bfloat16 or float16
+  using acc_t = at::acc_type<T, is_cuda>;
+  acc_t x = std::abs(_x);
 
   if (x <= 8.0) {
-    auto coeff_pair = chebyshev_coefficients_i0e_A<T>();
+    auto coeff_pair = chebyshev_coefficients_i0e_A<acc_t>();
     auto A = std::get<0>(coeff_pair);
     auto len = std::get<1>(coeff_pair);
-    T y = (x / 2.0) - 2.0;
-    return static_cast<T>(chbevl(y, A, len));
+    acc_t y = (x / 2.0) - 2.0;
+    return static_cast<acc_t>(chbevl(y, A, len));
   }
 
-  auto coeff_pair = chebyshev_coefficients_i0e_B<T>();
+  auto coeff_pair = chebyshev_coefficients_i0e_B<acc_t>();
   auto B = std::get<0>(coeff_pair);
   auto len = std::get<1>(coeff_pair);
-  return static_cast<T>(
-      chbevl(static_cast<T>(32.0 / x - 2.0), B, len) / std::sqrt(x));
+  return static_cast<acc_t>(
+      chbevl(static_cast<acc_t>(32.0 / x - 2.0), B, len) / std::sqrt(x));
 }
-
-// Upcast bfloat16 input to float for numerical accuracy purposes
-inline c10::BFloat16 calc_i0e(c10::BFloat16 a) { return calc_i0e(static_cast<float>(a)); }
 
 /*
  * This function is derived from the implementation of the i1 function in the Cephes Math Library.
@@ -1411,24 +1411,27 @@ inline c10::BFloat16 calc_i0e(c10::BFloat16 a) { return calc_i0e(static_cast<flo
  * One approximates the function over [0, 8], and the other over (8, infinity). This function takes the absolute value
  * of all inputs to convert them into the domain of the approximation.
  */
-template <typename T>
-static inline typename std::enable_if<std::is_floating_point<T>::value, T>::type
-calc_i1(T _x) {
-  T x = std::abs(_x);
+template <typename T, bool is_cuda = false>
+static C10_HOST_DEVICE inline T calc_i1(T _x) {
+  // Upcast input for numerical accuracy purposes
+  // Needed for accurate results if input is bfloat16 or float16
+  using acc_t = at::acc_type<T, is_cuda>;
+  acc_t x = std::abs(_x);
 
   if (x <= 8.0) {
-    auto coeff_pair = chebyshev_coefficients_i1e_A<T>();
+    auto coeff_pair = chebyshev_coefficients_i1e_A<acc_t>();
     auto A = std::get<0>(coeff_pair);
     auto len = std::get<1>(coeff_pair);
-    T y = (x / 2.0) - 2.0;
-    const T out = static_cast<T>(std::exp(x) * x * chbevl(y, A, len));
+    acc_t y = (x / 2.0) - 2.0;
+    const acc_t out = static_cast<acc_t>(std::exp(x) * x * chbevl(y, A, len));
     return (_x < 0.0) ? -out : out;
   }
-  auto coeff_pair = chebyshev_coefficients_i1e_B<T>();
+  auto coeff_pair = chebyshev_coefficients_i1e_B<acc_t>();
   auto B = std::get<0>(coeff_pair);
   auto len = std::get<1>(coeff_pair);
-  const auto out = static_cast<T>(
-      (std::exp(x) * chbevl(static_cast<T>(32.0 / x - 2.0), B, len)) / std::sqrt(x));
+  const auto out = static_cast<acc_t>(
+      (std::exp(x) * chbevl(static_cast<acc_t>(32.0 / x - 2.0), B, len)) /
+      std::sqrt(x));
   return (_x < 0.0) ? -out : out;
 }
 
@@ -1441,23 +1444,25 @@ calc_i1(T _x) {
  * One approximates the function over [0, 8], and the other over (8, infinity). This function takes the absolute value
  * of all inputs to convert them into the domain of the approximation.
  */
-template <typename T>
-static inline typename std::enable_if<std::is_floating_point<T>::value, T>::type
-calc_i1e(T _x) {
-  T x = std::abs(_x);
+template <typename T, bool is_cuda = false>
+static C10_HOST_DEVICE inline T calc_i1e(T _x) {
+  // Upcast input for numerical accuracy purposes
+  // Needed for accurate results if input is bfloat16 or float16
+  using acc_t = at::acc_type<T, is_cuda>;
+  acc_t x = std::abs(_x);
 
   if (x <= 8.0) {
-    auto coeff_pair = chebyshev_coefficients_i1e_A<T>();
+    auto coeff_pair = chebyshev_coefficients_i1e_A<acc_t>();
     auto A = std::get<0>(coeff_pair);
     auto len = std::get<1>(coeff_pair);
-    T y = (x / 2.0) - 2.0;
-    const auto out = static_cast<T>(chbevl(y, A, len) * x);
+    acc_t y = (x / 2.0) - 2.0;
+    const auto out = static_cast<acc_t>(chbevl(y, A, len) * x);
     return (_x < 0.0) ? -out : out;
   }
-  auto coeff_pair = chebyshev_coefficients_i1e_B<T>();
+  auto coeff_pair = chebyshev_coefficients_i1e_B<acc_t>();
   auto B = std::get<0>(coeff_pair);
   auto len = std::get<1>(coeff_pair);
-  const auto out =
-      static_cast<T>(chbevl(static_cast<T>(32.0 / x - 2.0), B, len) / std::sqrt(x));
+  const auto out = static_cast<acc_t>(
+      chbevl(static_cast<acc_t>(32.0 / x - 2.0), B, len) / std::sqrt(x));
   return (_x < 0.0) ? -out : out;
 }
