@@ -5205,7 +5205,7 @@ std::tuple<Tensor, Tensor> householder_product_backward(
 
       Tensor v_i_grad, tau_i_grad;
       std::tie(v_i_grad, tau_i_grad) = update_grad(i, v_i, t_i, K);
-      input_grads.push_back(v_i_grad.squeeze(-1));
+      input_grads.push_back(v_i_grad.unsqueeze(-1));
       tau_grads.push_back(tau_i_grad.squeeze(-1));
 
       // K <- H_{i + 1}^{-1} @ K @ H_i
@@ -5218,18 +5218,17 @@ std::tuple<Tensor, Tensor> householder_product_backward(
       }
     }
 
-    input_grad = at::stack(input_grads, -1);
-    tau_grad = at::stack(tau_grads, -1);
-
     // Only first k columns are active in forward.
     // zero gradients for the inactive input.
     if (k < input.size(-1)) {
       auto input_sizes = input_.sizes();
       at::DimVector new_sizes(input_sizes);
       new_sizes[input_.dim() - 1] = input.size(-1) - k;
-      auto zeros = at::zeros(new_sizes, input_.options());
-      input_grad = at::cat({input_grad, zeros}, -1);
+      input_grads.push_back(at::zeros(new_sizes, input_.options()));
     }
+
+    input_grad = at::cat(input_grads, -1);
+    tau_grad = at::stack(tau_grads, -1);
   } else {
     input_grad = at::zeros_like(input_);
     tau_grad = at::zeros_like(tau);
